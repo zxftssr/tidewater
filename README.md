@@ -129,7 +129,16 @@ npm run dev      # http://127.0.0.1:5189
 npm run build    # static build in dist/
 ```
 
-Every push to `main` deploys to GitHub Pages through `.github/workflows/deploy.yml`.
+Run the CPU tests with Node.js 22 or newer; they need no dependency installation or GPU:
+
+```sh
+npm run test:cpu # fishing logic, walking, swimming, deck movement and boat controls
+npm test         # CPU tests plus the WebGPU engine smoke test (requires npm install and a GPU)
+```
+
+Pull requests targeting `main` run the CPU tests through `.github/workflows/deploy.yml`.
+Every push to `main` must pass those tests before building. Repositories with GitHub Pages enabled
+then deploy the build; otherwise the Pages steps are skipped.
 
 ## Project layout
 
@@ -146,7 +155,7 @@ Every push to `main` deploys to GitHub Pages through `.github/workflows/deploy.y
 | `src/audio/` | The sample-based soundscape |
 | `src/ui/` | Settings panel, loading screen and HUD |
 | `tools/` | Scripts that fetch and convert the characters, stall props and fishing sounds |
-| `test/` | Headless engine smoke test and game-logic tests (`npm test`), and HUD / loader dev pages |
+| `test/` | CPU game-logic and player / boat tests (`npm run test:cpu`), WebGPU engine smoke test (`npm test`), and HUD / loader dev pages |
 
 ## Credits and license
 

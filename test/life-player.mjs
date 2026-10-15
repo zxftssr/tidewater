@@ -1,11 +1,13 @@
 // Player / BoatController / FlyCamera on the CPU (node, no GPU) with stubs: a gentle analytic
-// swell behind the WaterQuery API, empty colliders, a boat model with the BoatModel anchor API.
-// Simulates walking, swimming, boarding + driving the boat, leaving it, and the fly camera, and
+// swell behind the WaterQuery API, no shore colliders, and a boat model with hull lines and a deck obstacle.
+// Simulates walking, swimming, boarding, walking the deck, driving, leaving the boat, and the fly camera, and
 // asserts finite, plausible states.
 //   node test/life-player.mjs
 import * as E from '../src/engine/index.js';
 import { TerrainData } from '../src/world/TerrainData.js';
 import { WORLD } from '../src/world/WorldLayout.js';
+import { HullLines } from '../src/world/boat/HullLines.js';
+import { HOUSE } from '../src/world/boat/Wheelhouse.js';
 import { Player } from '../src/player/Player.js';
 import { BoatController } from '../src/player/BoatController.js';
 import { FlyCamera } from '../src/player/FlyCamera.js';
@@ -73,12 +75,16 @@ const hullSamples = [];
 for ( let i = 0; i < 5; i ++ ) for ( let j = 0; j < 3; j ++ ) hullSamples.push( { position: new E.Vector3( ( j - 1 ) * 0.95, - 0.22, - 3.2 + i * 1.5 ), area: 1.1, bottomY: - 0.6 } );
 const volume = hullSamples.reduce( ( a, s ) => a + s.area * - s.position.y, 0 );
 const calls = { throttle: 0, steer: 0, rpm: 0 };
+const lines = new HullLines();
+const deckObstacle = { center: new E.Vector3( 0.7, lines.deckY + 0.5, - 1.75 ), half: new E.Vector3( 0.2, 0.5, 0.2 ), solid: true, walkable: false };
 const model = {
 	group: new E.Group(),
 	hullSamples,
+	lines,
+	colliders: [ deckObstacle ],
 	hydro: { suggestedMass: Math.round( 1025 * volume ), centerOfMass: new E.Vector3( 0, 0.3, - 0.2 ), centerOfBuoyancy: new E.Vector3( 0, - 0.11, - 0.2 ), inertia: new E.Vector3( 14600, 15700, 3500 ) },
-	helmEye: new E.Vector3( 0.4, 1.85, 0.3 ),
-	boardPoint: new E.Vector3( 0, 0.9, - 1.75 ),
+	helmEye: new E.Vector3( HOUSE.helmX, 1.85, 0.3 ),
+	boardPoint: new E.Vector3( 0, lines.deckY, - 1.75 ),
 	exitPoints: [ new E.Vector3( 1.3, 0.95, - 1 ), new E.Vector3( - 1.3, 0.95, - 1 ) ],
 	propeller: new E.Vector3( 0, - 0.55, - 3.3 ),
 	rudder: new E.Vector3( 0, - 0.5, - 3.6 ),
@@ -113,9 +119,10 @@ const run = ( sec, each = null ) => {
 
 		time += dt;
 		if ( each ) each();
+		// Match App._frame: physics first, then the player/camera, then next frame's water queries.
+		boat.update( dt );
 		player.update( dt );
 		boat.queueQueries();
-		boat.update( dt );
 		query.tick();
 		input.endFrame();
 
@@ -167,7 +174,26 @@ run( 0.1 );
 check( player.nearBoat(), 'boat: near the board point' );
 input.press( 'KeyE' );
 run( dt );
-check( player.mode === 'boat' && boat.driven && ! boat.moored, `boat: boarded (mode ${ player.mode })` );
+check( player.mode === 'deck' && ! boat.driven && boat.moored, `boat: boards the deck without starting the engine (mode ${ player.mode })` );
+run( 0.5 );
+check( player.deckGrounded && Math.abs( player.deckPos.y - lines.deckY ) < 1e-6, 'deck: feet rest on the cockpit sole' );
+check( player.prompt?.text !== 'Take the helm', 'deck: the helm is out of reach at the boarding point' );
+
+// Walk into the obstacle, then around it to the helm using the normal movement and interaction inputs.
+player.deckYaw = 0;
+input.keys.add( 'KeyA' );
+run( 1 );
+input.keys.delete( 'KeyA' );
+run( 0.2 );
+check( player.deckPos.x > 0.1 && player.deckPos.x < deckObstacle.center.x - deckObstacle.half.x, 'deck: a solid obstacle stops sideways movement' );
+player.deckYaw = Math.atan2( HOUSE.helmX - player.deckPos.x, HOUSE.seatZ - player.deckPos.z );
+input.keys.add( 'KeyW' );
+run( 1.2 );
+input.keys.delete( 'KeyW' );
+check( player.mode === 'deck' && player.prompt?.text === 'Take the helm', 'deck: walking to the wheel exposes the helm interaction' );
+input.press( 'KeyE' );
+run( dt );
+check( player.mode === 'boat' && boat.driven && ! boat.moored, 'boat: taking the helm starts driving and releases the mooring' );
 
 // ---- drive: full ahead, then a turn
 const b0 = boat.position.clone();
@@ -195,14 +221,24 @@ input.press( 'KeyV' );
 run( 1 );
 check( player.camMode === 'first' && camera.position.distanceTo( boat.toWorld( model.helmEye, new E.Vector3() ) ) < 0.4, 'boat: helm camera at the helm eye (within one boat step)' );
 
-// ---- coast, then leave the boat (out at sea: swim)
+// ---- coast, leave the helm, then leave the boat from the rail
 run( 15 );
 input.press( 'KeyE' );
-run( 1 );
-check( player.mode === 'swim' || player.mode === 'walk', `boat: left the boat (mode ${ player.mode })` );
-check( ! boat.driven && finite( player.position ), 'boat: no longer driven' );
+run( dt );
+check( player.mode === 'deck' && ! boat.driven && boat.throttle === 0, 'boat: leaving the helm returns to the deck and cuts the throttle' );
 run( 5 );
 check( finite( boat.position ) && boat.speed < straight, `boat: drifts (speed ${ boat.speed.toFixed( 2 ) } m/s)` );
+check( player.mode === 'deck' && finite( camera.position ) && player.position.distanceTo( boat.toWorld( player.deckPos, new E.Vector3() ) ) < 1e-6, 'deck: the player follows the drifting boat' );
+// Place the player beside an exit; E must perform the transition, not a direct exitBoat() call.
+player.deckPos.set( model.exitPoints[ 1 ].x, lines.deckY, model.exitPoints[ 1 ].z );
+run( 0.3 );
+check( player.prompt?.text === 'Jump overboard' || player.prompt?.text === 'Step ashore', 'deck: the rail exposes the leave-boat interaction' );
+input.press( 'KeyE' );
+run( dt );
+check( player.mode === 'swim' || player.mode === 'walk', `boat: left the boat from the rail (mode ${ player.mode })` );
+check( ! boat.driven && finite( player.position ), 'boat: no longer driven after leaving' );
+run( 1 );
+check( finite( player.position ) && finite( camera.position ), 'boat: player and camera remain finite after leaving' );
 
 // ---- fly camera
 const fly = new FlyCamera( camera, { addEventListener() {} }, input );

@@ -1,7 +1,9 @@
-name: Deploy to GitHub Pages
+name: CPU tests and GitHub Pages deployment
 
 on:
   push:
+    branches: [ main ]
+  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
@@ -11,12 +13,28 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.event.pull_request.number || 'deploy' }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  cpu-tests:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # These tests use only Node and local modules; no install or GPU is needed.
+      - run: npm run test:cpu
+
+  build:
+    needs: cpu-tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.pages.outputs.enabled }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,13 +43,23 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Check Pages configuration
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          enabled=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_pages')
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
       - uses: actions/configure-pages@v5
+        if: steps.pages.outputs.enabled == 'true'
       - uses: actions/upload-pages-artifact@v3
+        if: steps.pages.outputs.enabled == 'true'
         with:
           path: dist
 
   deploy:
     needs: build
+    if: needs.build.outputs.pages_enabled == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
