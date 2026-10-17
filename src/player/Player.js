@@ -301,6 +301,46 @@ export class Player {
 		const inp = this.input;
 		const p = this.position;
 		const surfaceY = this.waterH;
+		// While holding a ladder, climb before buoyancy and the surface clamp. Otherwise
+		// each swim frame erases the previous frame's climb; swim momentum can also break reach.
+		if ( this.colliders.boxes ) {
+
+			for ( const b of this.colliders.boxes ) {
+
+				if ( b.tag !== 'ladder' ) continue;
+				if ( Math.hypot( b.center.x - p.x, b.center.z - p.z ) < 1.1 ) {
+
+					this.prompt = { key: 'Space', text: 'Climb ladder' };
+					if ( inp.down( 'Space' ) || inp.down( 'KeyW' ) ) {
+
+						const top = this.colliders.groundHeightAt( b.center.x, b.center.z, 10 );
+						if ( top > p.y ) {
+
+							p.y += dt * 1.6;
+							this.velocity.set( 0, 0, 0 );
+							if ( p.y > top - 1.0 ) {
+
+								// step onto the deck
+								const deck = WORLD.pier.deckHeight;
+								p.set( b.center.x - Math.sign( b.center.x - WORLD.pier.x ) * 1.2, deck, b.center.z );
+								this.mode = 'walk';
+
+							}
+
+							return;
+
+						}
+
+					}
+
+					break;
+
+				}
+
+			}
+
+		}
+
 		// look-relative movement (diving follows the view)
 		_fwd.set( 0, 0, - 1 ).applyEuler( _e.set( this.pitch, this.yaw, 0 ) );
 		_right.set( - Math.cos( this.yaw ), 0, Math.sin( this.yaw ) ).negate();
@@ -368,43 +408,6 @@ export class Player {
 			this.mode = 'walk';
 			p.y = g;
 			this.velocity.set( this.velocity.x, 0, this.velocity.z );
-
-		}
-
-		// ladders on the pier: climb out when swimming into them
-		if ( this.colliders.boxes ) {
-
-			for ( const b of this.colliders.boxes ) {
-
-				if ( b.tag !== 'ladder' ) continue;
-				if ( Math.hypot( b.center.x - p.x, b.center.z - p.z ) < 1.1 ) {
-
-					this.prompt = { key: 'Space', text: 'Climb ladder' };
-					if ( inp.down( 'Space' ) || inp.down( 'KeyW' ) ) {
-
-						const top = this.colliders.groundHeightAt( b.center.x, b.center.z, 10 );
-						if ( top > p.y ) {
-
-							p.y += dt * 1.6;
-							if ( p.y > top - 1.0 ) {
-
-								// step onto the deck
-								const deck = WORLD.pier.deckHeight;
-								p.set( b.center.x - Math.sign( b.center.x - WORLD.pier.x ) * 1.2, deck, b.center.z );
-								this.mode = 'walk';
-								this.velocity.set( 0, 0, 0 );
-
-							}
-
-						}
-
-					}
-
-					break;
-
-				}
-
-			}
 
 		}
 

@@ -1,5 +1,5 @@
 // Player / BoatController / FlyCamera on the CPU (node, no GPU) with stubs: a gentle analytic
-// swell behind the WaterQuery API, no shore colliders, and a boat model with hull lines and a deck obstacle.
+// swell behind the WaterQuery API, a focused pier/ladder fixture, and a boat model with hull lines and a deck obstacle.
 // Simulates walking, swimming, boarding, walking the deck, driving, leaving the boat, and the fly camera, and
 // asserts finite, plausible states.
 //   node test/life-player.mjs
@@ -11,6 +11,7 @@ import { HOUSE } from '../src/world/boat/Wheelhouse.js';
 import { Player } from '../src/player/Player.js';
 import { BoatController } from '../src/player/BoatController.js';
 import { FlyCamera } from '../src/player/FlyCamera.js';
+import { Colliders } from '../src/world/Colliders.js';
 
 let fails = 0;
 const check = ( ok, msg ) => {
@@ -165,6 +166,85 @@ input.keys.add( 'Space' );
 run( 4 );
 input.keys.delete( 'Space' );
 check( player.position.y > - 1.2, `swim: rises again (y ${ player.position.y.toFixed( 2 ) })` );
+
+// ---- pier ladder: real collision queries, calm water, and the layout used by Pier.js
+const pierColliders = new Colliders();
+const pier = WORLD.pier;
+const ladderX = pier.x + pier.headWidth / 2 + 0.32, ladderZ = 35.1;
+pierColliders.addBox( new E.Vector3( pier.x, pier.deckHeight - 0.04, pier.zEnd - pier.headDepth / 2 ), new E.Vector3( pier.headWidth / 2, 0.04, pier.headDepth / 2 ), 0, { walkable: true } );
+for ( let y = - 0.15; y < pier.deckHeight - 0.1; y += 0.3 ) {
+
+	pierColliders.addBox( new E.Vector3( ladderX, y - 0.15, ladderZ ), new E.Vector3( 0.27, 0.15, 0.3 ), 0, { walkable: true, solid: false, tag: 'ladder' } );
+
+}
+const makeClimber = ( x = ladderX - 0.1, z = ladderZ - 0.82 ) => {
+
+	const keys = new InputStub();
+	const c = new Player( {
+
+		camera: new E.PerspectiveCamera( 60, 2, 0.1, 5000 ), input: keys,
+		terrain: { heightAt: () => - 4 }, colliders: pierColliders, boat: null,
+		query: { allocate: () => 0, setPoint() {}, cpuValid: true, cpu: new Float32Array( 4 ) },
+
+	} );
+	c.position.set( x, 0, z );
+	c.mode = 'swim';
+	c.yaw = Math.PI / 2;
+	c.pitch = 0;
+	return { c, keys };
+
+};
+const stepClimber = ( c, seconds, step = dt ) => {
+
+	for ( let i = 0; i < Math.round( seconds / step ); i ++ ) {
+
+		c.update( step );
+		c.input.endFrame();
+
+	}
+
+};
+for ( const key of [ 'Space', 'KeyW' ] ) for ( const step of [ 1 / 60, 1 / 20 ] ) {
+
+	const { c, keys } = makeClimber();
+	keys.keys.add( key );
+	// Include residual swim momentum: holding a rung must not carry the player out of reach.
+	c.velocity.set( 1, 0, 0.5 );
+	for ( let i = 0; i < 2 / step && c.mode === 'swim'; i ++ ) c.update( step );
+	check( c.mode === 'walk' && Math.abs( c.position.y - pier.deckHeight ) < 1e-6, `ladder: ${ key } climbs from calm water to the pier at ${ Math.round( 1 / step ) } fps` );
+	keys.keys.clear();
+	stepClimber( c, 1, step );
+	check( c.mode === 'walk' && c.grounded && Math.abs( c.position.y - pier.deckHeight ) < 1e-6 && finite( c.camera.position ), `ladder: ${ key } lands on solid deck and stays there at ${ Math.round( 1 / step ) } fps` );
+
+}
+{
+
+	const { c, keys } = makeClimber();
+	stepClimber( c, 1 );
+	check( c.mode === 'swim' && c.prompt?.text === 'Climb ladder' && c.position.y <= 0.05, 'ladder: proximity alone shows the prompt without climbing' );
+	keys.keys.add( 'Space' );
+	stepClimber( c, 0.2 );
+	check( c.mode === 'swim' && c.position.y > 0.2, 'ladder: climbing gains height across multiple frames' );
+	keys.keys.clear();
+	stepClimber( c, 0.5 );
+	check( c.mode === 'swim' && c.position.y <= 0.05, 'ladder: releasing the climb key resumes surface swimming' );
+	keys.keys.add( 'KeyC' );
+	stepClimber( c, 1 );
+	check( c.mode === 'swim' && c.position.y < - 0.5, 'ladder: diving remains available beside the ladder' );
+
+}
+{
+
+	const { c, keys } = makeClimber( ladderX + 3, ladderZ );
+	keys.keys.add( 'Space' );
+	stepClimber( c, 2 );
+	check( c.mode === 'swim' && c.position.y <= 0.05 && c.prompt?.text !== 'Climb ladder', 'ladder: Space outside reach only swims up to the surface' );
+	keys.keys.clear();
+	keys.keys.add( 'KeyW' );
+	for ( let i = 0; i < 4 / dt && c.mode === 'swim'; i ++ ) c.update( dt );
+	check( c.mode === 'walk' && Math.abs( c.position.y - pier.deckHeight ) < 1e-6, 'ladder: swimming forward into reach continues up onto the pier' );
+
+}
 
 // ---- board the boat
 const bp = boat.toWorld( model.boardPoint, new E.Vector3() );
